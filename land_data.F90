@@ -127,6 +127,10 @@ type :: land_data_type
      discharge_snow      => NULL(),  & ! solid water flux from land to ocean
      discharge_snow_heat => NULL()     ! sensible heat of discharge_snow (0 C datum)
 
+   real, pointer, dimension(:,:) :: &  ! (lon, lat)
+     IS_adot          => NULL()      ! surface mass flux to ice sheet
+     !IS_adot_heat     => NULL()     ! sensible heat of IS_adot (0 C datum)
+
    logical, pointer, dimension(:,:):: &
         mask => NULL()          ! true if land
 

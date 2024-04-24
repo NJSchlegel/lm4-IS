@@ -159,6 +159,7 @@ logical :: give_stock_details              = .false.
 logical :: use_tfreeze_in_grnd_latent      = .false.
 logical :: use_atmos_T_for_precip_T        = .false.
 logical :: use_atmos_T_for_evap_T          = .false.
+logical :: IS_on                           = .false.
 real    :: cpw = 1952.  ! specific heat of water vapor at constant pressure
 real    :: clw = 4218.  ! specific heat of water (liquid)
 real    :: csw = 2106.  ! specific heat of water (ice)
@@ -224,7 +225,7 @@ namelist /land_model_nml/ use_old_conservation_equations, &
                           lm2, give_stock_details, &
                           use_tfreeze_in_grnd_latent, &
                           use_atmos_T_for_precip_T, &
-                          use_atmos_T_for_evap_T, &
+                          use_atmos_T_for_evap_T, IS_on, &
                           cpw, clw, csw, min_sum_lake_frac, min_frac, &
                           gfrac_tol, discharge_tol, &
                           improve_solution, solution_tol, max_improv_steps, &
@@ -275,6 +276,7 @@ integer :: &
   id_fsw,      id_fswv,     id_fsws,     id_fswg,                          &
   id_flw,      id_flwv,     id_flws,     id_flwg,                          &
   id_sens,     id_sensv,    id_senss,    id_sensg,                         &
+  id_is_adot,                                                              &
 !
   id_e_res_1,  id_e_res_2,  id_cd_m,     id_cd_t,                          &
   id_cellarea, id_landfrac,                                                &
@@ -1064,6 +1066,9 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
   real :: runoff_sg(lnd%is:lnd%ie,lnd%js:lnd%je)
   real :: runoff_c_sg(lnd%is:lnd%ie,lnd%js:lnd%je,n_river_tracers)
 
+  real :: IS_adot(lnd%ls:lnd%le) ! total surface mass flux to ice sheet, accumulated over tiles in cell
+  real :: IS_adot_sg(lnd%is:lnd%ie,lnd%js:lnd%je)
+
   real :: snc(lnd%ls:lnd%le), snow_depth, snow_area ! snow cover, for CMIP6 diagnostics
 
   logical :: used          ! return value of send_data diagnostics routine
@@ -1100,7 +1105,7 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
   call update_nitrogen_sources(lnd%time, lnd%time+lnd%dt_fast)
 
   ! clear the runoff values, for accumulation over the tiles
-  runoff = 0 ; runoff_c = 0
+  runoff = 0 ; runoff_c = 0 ; IS_adot = 0 
   ! clear the snc (snow cover diag) values, for accumulation over the tiles
   snc = 0
 
@@ -1146,7 +1151,7 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
            ISa_dn_dir, ISa_dn_dif, cplr2land%lwdn_flux(l,k), &
            cplr2land%ustar(l,k), cplr2land%p_surf(l,k), cplr2land%drag_q(l,k), &
            phot_co2_overridden, phot_co2_data(l),&
-           runoff(l), runoff_c(l,:) &
+           runoff(l), runoff_c(l,:), IS_adot(l) &
         )
         ! some of the diagnostic variables are sent from here, purely for coding
         ! convenience: the compute domain-level 2d and 3d vars are generally not
@@ -1169,9 +1174,10 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
   enddo
 
   !--- pass runoff from unstructured grid to structured grid.
-  runoff_sg = 0 ; runoff_c_sg = 0
+  runoff_sg = 0 ; runoff_c_sg = 0 ; IS_adot_sg = 0
   call mpp_pass_UG_to_SG(lnd%ug_domain, runoff,   runoff_sg  )
   call mpp_pass_UG_to_SG(lnd%ug_domain, runoff_c, runoff_c_sg)
+  call mpp_pass_UG_to_SG(lnd%ug_domain, IS_adot, IS_adot_sg)
 
   call get_watch_point(iwatch,jwatch,kwatch,face)
   if (face==lnd%sg_face.and.(lnd%is<=iwatch.and.iwatch<=lnd%ie).and.&
@@ -1183,6 +1189,8 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
 
   !--- update river state
   call update_river(runoff_sg, runoff_c_sg, land2cplr)
+  land2cplr%IS_adot = IS_adot_sg
+  if (id_is_adot > 0) used = send_data (id_is_adot, IS_adot_sg, lnd%time)
 
   if(id_tws>0) then
      call get_river_water(twsr_sg)
@@ -1191,7 +1199,7 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
 
   ce = first_elmt(land_tile_map, ls=lbound(cplr2land%t_flux,1) )
   do while(loop_over_tiles(ce,tile,l,k))
-     cana_VMASS = 0. ;                   cana_HEAT = 0.
+     ca0na_VMASS = 0. ;                   cana_HEAT = 0.
      vegn_LMASS = 0. ; vegn_FMASS = 0. ; vegn_HEAT = 0.
      snow_LMASS = 0. ; snow_FMASS = 0. ; snow_HEAT = 0.
      subs_LMASS = 0. ; subs_FMASS = 0. ; subs_HEAT = 0.
@@ -1284,7 +1292,7 @@ subroutine update_land_model_fast_0d ( tile, l,itile, N, land2cplr, &
    ISa_dn_dir, ISa_dn_dif, ILa_dn, &
    ustar, p_surf, drag_q, &
    phot_co2_overridden, phot_co2_data, &
-   runoff, runoff_c &
+   runoff, runoff_c, IS_adot &
    )
   type (land_tile_type), pointer :: tile
   integer, intent(in) :: l ! position in unstructured grid
@@ -1309,7 +1317,8 @@ subroutine update_land_model_fast_0d ( tile, l,itile, N, land2cplr, &
   logical, intent(in):: phot_co2_overridden
   real, intent(inout) :: &
        runoff, &   ! total runoff of H2O, kg/m2
-       runoff_c(:) ! runoff of tracers (including ice/snow and heat)
+       runoff_c(:), & ! runoff of tracers (including ice/snow and heat)
+       IS_adot ! surface mass flux to ice sheet, kg/(m2 s)
 
   ! ---- local vars
   real :: A(3*N+2,3*N+2),B0(3*N+2),B1(3*N+2),B2(3*N+2) ! implicit equation matrix and right-hand side vectors
@@ -2095,6 +2104,11 @@ subroutine update_land_model_fast_0d ( tile, l,itile, N, land2cplr, &
           subs_DT, subs_M_imp, subs_evap, &
           subs_levap, subs_fevap, &
           subs_melt, subs_lrunf, subs_hlrunf, subs_Ttop, subs_Ctop )
+      if (IS_on.and.lnd%ug_lat(l)<-60.) then
+         IS_adot = IS_adot + (snow_frunf - subs_melt - subs_levap - subs_fevap)*tile%frac
+         snow_frunf = 0
+      endif
+  else
      subs_frunf = 0.
      subs_hfrunf = 0.
      subs_tr_runf(:) = 0.
@@ -4170,6 +4184,10 @@ subroutine land_diag_init(clonb, clatb, clon, clat, time, &
              'Total nitrogen in all terrestrial nitrogen pools', 'kg m-2', &
              standard_name='mass_content_of_nitrogen_in_vegetation_and_litter_and_soil_and_forestry_and_agricultural_products', &
              missing_value=-1.0, fill_missing=.TRUE. )
+
+  id_is_adot  = register_diag_field ( module_name, 'IS_adot', (/id_lon, id_lat/), time, &
+             'surface flux to ice sheet', 'kg/(m2 s)', missing_value=-1.0e+20, area=id_cellarea )
+
 end subroutine land_diag_init
 
 
@@ -4387,6 +4405,9 @@ subroutine realloc_land2cplr ( bnd )
      allocate( bnd%discharge_heat     (lnd%is:lnd%ie,lnd%js:lnd%je) )
      allocate( bnd%discharge_snow     (lnd%is:lnd%ie,lnd%js:lnd%je) )
      allocate( bnd%discharge_snow_heat(lnd%is:lnd%ie,lnd%js:lnd%je) )
+     
+     allocate(bnd%IS_adot     (lnd%is:lnd%ie,lnd%js:lnd%je))
+     !allocate(bnd%IS_adot_heat(lnd%is:lnd%ie,lnd%js:lnd%je)
 
      ! discharge and discharge_snow must be, in contrast to the rest of the boundary
      ! values, filled with zeroes. The reason is because not all of the usable elements
@@ -4395,6 +4416,8 @@ subroutine realloc_land2cplr ( bnd )
      bnd%discharge_heat      = 0.0
      bnd%discharge_snow      = 0.0
      bnd%discharge_snow_heat = 0.0
+     bnd%IS_adot             = 0.0
+     !bnd%IS_adot_heat       = 0.0
   endif
 end subroutine realloc_land2cplr
 
@@ -4431,6 +4454,8 @@ subroutine dealloc_land2cplr ( bnd, dealloc_discharges )
      __DEALLOC__( bnd%discharge_heat      )
      __DEALLOC__( bnd%discharge_snow      )
      __DEALLOC__( bnd%discharge_snow_heat )
+     __DEALLOC__( bnd%IS_adot )
+     !__DEALLOC__( bnd%IS_adot_heat )
   end if
 
 end subroutine dealloc_land2cplr
