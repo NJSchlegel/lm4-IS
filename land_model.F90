@@ -1199,7 +1199,7 @@ subroutine update_land_model_fast ( cplr2land, land2cplr )
 
   ce = first_elmt(land_tile_map, ls=lbound(cplr2land%t_flux,1) )
   do while(loop_over_tiles(ce,tile,l,k))
-     ca0na_VMASS = 0. ;                   cana_HEAT = 0.
+     cana_VMASS = 0. ;                   cana_HEAT = 0.
      vegn_LMASS = 0. ; vegn_FMASS = 0. ; vegn_HEAT = 0.
      snow_LMASS = 0. ; snow_FMASS = 0. ; snow_HEAT = 0.
      subs_LMASS = 0. ; subs_FMASS = 0. ; subs_HEAT = 0.
@@ -2104,11 +2104,10 @@ subroutine update_land_model_fast_0d ( tile, l,itile, N, land2cplr, &
           subs_DT, subs_M_imp, subs_evap, &
           subs_levap, subs_fevap, &
           subs_melt, subs_lrunf, subs_hlrunf, subs_Ttop, subs_Ctop )
-      if (IS_on.and.lnd%ug_lat(l)<-60.) then
-         IS_adot = IS_adot + (snow_frunf - subs_melt - subs_levap - subs_fevap)*tile%frac
-         snow_frunf = 0
-      endif
-  else
+     if (IS_on.and.lnd%ug_lat(l)<-60.) then
+          IS_adot = IS_adot + (snow_frunf - subs_melt - subs_levap - subs_fevap)*tile%frac
+          snow_frunf = 0.
+     endif
      subs_frunf = 0.
      subs_hfrunf = 0.
      subs_tr_runf(:) = 0.
